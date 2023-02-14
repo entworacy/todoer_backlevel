@@ -112,6 +112,10 @@ void kakao_code_req_test(char* code) {
                 json_object *scope_object = json_object_object_get(obj, "scope");
                 json_object *refresh_token_expires_in_object = json_object_object_get(obj, "refresh_token_expires_in");
                 if(access_token_object&&token_type_object&&refresh_token_object&&id_token_object&&expires_in_object&&scope_object&&refresh_token_expires_in_object) {
+                    const char* access_token = json_object_get_string(access_token_object);
+                    const char* id_token = json_object_get_string(id_token_object);
+
+                } else {
 
                 }
             }
