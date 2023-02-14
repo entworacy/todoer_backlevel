@@ -4,6 +4,9 @@
 
 #include "kakao.h"
 
+
+#include "l8w8jwt/decode.h"
+
 size_t __Network_write_to_memory_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     struct MemoryStruct *mem = (struct MemoryStruct *) userp;
@@ -114,6 +117,19 @@ void kakao_code_req_test(char* code) {
                 if(access_token_object&&token_type_object&&refresh_token_object&&id_token_object&&expires_in_object&&scope_object&&refresh_token_expires_in_object) {
                     const char* access_token = json_object_get_string(access_token_object);
                     const char* id_token = json_object_get_string(id_token_object);
+                    strtok(id_token, ".");
+                    printf("%s\n", strtok(NULL, "."));
+                    struct l8w8jwt_decoding_params params;
+                    l8w8jwt_decoding_params_init(&params);
+
+                    params.alg = L8W8JWT_ALG_RS256;
+
+                    params.jwt = (char*)id_token;
+                    params.jwt_length = strlen(id_token);
+                    enum l8w8jwt_validation_result validation_result;
+                    int r = l8w8jwt_decode(&params, &validation_result, NULL, NULL);
+
+                    printf("\nl8w8jwt_decode_rs256 function returned %s (code %d).\n\nValidation result: \n%d\n", r == L8W8JWT_SUCCESS ? "successfully" : "", r, validation_result);
 
                 } else {
 
