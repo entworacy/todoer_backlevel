@@ -36,10 +36,10 @@ static int get_real_payload_key_list_arr_size(const char *payload_key_list[]) {
 }
 
 
-void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
+KakaoIDTokenPayload *oauth_kakao_check_token(char* code, AuthStatus2* auth_status) {
     if(auth_status == NULL) {
         log_fatal("AuthStatus is NULL");
-        return;
+        return NULL;
     }
     CURL* curl;
     CURLcode res;
@@ -80,29 +80,43 @@ void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
                           curl_easy_escape(curl, code, strlen(code)));
         if (len < 36) {
             fprintf(stderr, "sprintf buffer length less than 36.\n");
-            return;
+            auth_status->error_code = OAUTH_PARAM_MISSING;
+            auth_status->status = EXCEPTION;
+            return NULL;
         }
 
         curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buffer);
         res = curl_easy_perform(curl);
-        if(res != CURLE_OK)
-            fprintf(stderr, "curl_easy_perform() failed: %s\n",
-                    curl_easy_strerror(res));
+        if(res != CURLE_OK) {
+            log_error("curl_easy_perform() failed");
+            auth_status->error_code = OAUTH_PROVIDER_ERROR;
+            auth_status->status = EXCEPTION;
+            return NULL;
+        }
 
         json_object *obj = json_tokener_parse((const char*) chunk.memory);
         if (obj == NULL) {
-            *auth_status = EXCEPTION;
-            fprintf(stderr, "json_tokener_parse() failed\n");
+            auth_status->status = EXCEPTION;
+            auth_status->error_code = OAUTH_SERVER_ERROR;
+            log_error("json_tokener_parse() failed");
+            return NULL;
         }
         else {
             long response_code = 0;
             curl_easy_getinfo(curl, CURLINFO_HTTP_CODE, &response_code);
             if(response_code != 200) {
                 // Error
-                if(response_code == 401) *auth_status = UNAUTHORIZED;
-                char* error_code = json_object_get_string(json_object_object_get(obj, "error_code"));
-                char* error = json_object_get_string(json_object_object_get(obj, "error"));
-                char* error_description = json_object_get_string(json_object_object_get(obj, "error_description"));
+                if(response_code == 401 || response_code == 400) {
+                    auth_status->status = UNAUTHORIZED;
+                    auth_status->error_code = OAUTH_SESSION_EXPIRED;
+                }
+                else {
+                    auth_status->status = OTHER_HTTP_ERROR;
+                    auth_status->error_code = OAUTH_SERVER_ERROR;
+                }
+                const char* error_code = json_object_get_string(json_object_object_get(obj, "error_code"));
+                const char* error = json_object_get_string(json_object_object_get(obj, "error"));
+                const char* error_description = json_object_get_string(json_object_object_get(obj, "error_description"));
                 char* template = "time: %s\nerror_code: %s\nerror: %s\nerror_description: %s\nhttp_status: %ld\npost_buffer: %s\nurl: %s";
                 char times[35];
                 time_t rawTime = time(NULL);
@@ -120,7 +134,9 @@ void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
                         strlen(template) + strlen("https://kauth.kakao.com/oauth/token") + strlen(times) ));
                 sprintf(_buffer, template, times, error_code, error, error_description, response_code, buffer, "https://kauth.kakao.com/oauth/token");
                 fprintf(stderr, "%s\n", _buffer);
-                *auth_status = OTHER_HTTP_ERROR;
+                free(pTimeInfo);
+
+                return NULL;
             } else {
                 // Success
                 json_object *access_token_object = json_object_object_get(obj, "access_token");
@@ -144,8 +160,9 @@ void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
                     json_object *id_payload_object = json_tokener_parse(__buffer);
                     if (id_payload_object == NULL) {
                         log_fatal("Failed to parse ID Token payload.");
-                        *auth_status = EXCEPTION;
-                        return;
+                        auth_status->error_code = OAUTH_SERVER_ERROR;
+                        auth_status->status = EXCEPTION;
+                        return NULL;
                     }
 
                     json_object *id_payload_object_list[KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH] = {NULL}; //추후 늘어날 것 예방
@@ -205,32 +222,55 @@ void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
                     if(!email || !sub || !profile_url || !user_name) {
                         // 모든 항목에 동의하지 않은 경우 일부 값이 NULL이다.
                         printf("필수 항목에 동의되어 있지 않습니다. [%s]\n", OAUTH_REQUIRED_DATA_MISSING);
-                        return;
+                        auth_status->status = EXCEPTION;
+                        auth_status->error_code = OAUTH_REQUIRED_DATA_MISSING;
+                        return NULL;
                     }
 
-                    printf("sub: %s\n", sub);
-                    User user;
-                    user.email = email;
-                    // user.OAuthID = sub;
-                    user.name = user_name;
-                    user.profileUrlPath = profile_url;
-                    user.id = "";
+                    // email, sub 등의 값이 저장된 메모리 배열인 payload_result_list은 함수 마지막에 freed 되므로,
+                    // strcpy를 통해 값을 복사해야 합니다.
+                    KakaoIDTokenPayload *payload_result = malloc(sizeof(KakaoIDTokenPayload));
+                    payload_result->email = malloc(sizeof(const char) * strlen(email));
+                    payload_result->sub = malloc(sizeof(const char) * strlen(sub));
+                    payload_result->picture = malloc(sizeof(const char) * strlen(profile_url));
+                    payload_result->nickname = malloc(sizeof(const char) * strlen(user_name));
+                    if (payload_result->email && payload_result->sub && payload_result->picture && payload_result->nickname) {
+                        strcpy(payload_result->email, email);
+                        strcpy(payload_result->sub, sub);
+                        strcpy(payload_result->picture, profile_url);
+                        strcpy(payload_result->nickname, user_name);
 
-                    free(__buffer);
+                        free(__buffer);
+                        oauth_kakao_free_resource(payload_result_type_list);
+                        oauth_kakao_free_list(payload_result_list, sizeof(payload_result_list) / sizeof(void*), false);
+                        oauth_kakao_free_list(id_payload_object_list, sizeof(id_payload_object_list) / sizeof(json_object*), false);
+                        curl_easy_cleanup(curl);
+                        oauth_kakao_free_resource(buffer);
+                        free(chunk.memory);
 
-                    //oauth_kakao_free_resource(payload_result_type_list);
-                    oauth_kakao_free_list(payload_result_list, sizeof(payload_result_list) / sizeof(void*), false);
-                    //oauth_kakao_free_list(id_payload_object_list, sizeof(id_payload_object_list) / sizeof(json_object*), false);
+                        auth_status->status = SUCCESS;
+                        auth_status->error_code = OAUTH_SUCCESS;
+                        return payload_result;
+                    } else {
+                        // malloc 실패
+                        log_error("payload_result malloc failed");
+                        auth_status->status = EXCEPTION;
+                        auth_status->error_code = OAUTH_SERVER_ERROR;
+                        return NULL;
+                    }
                 } else {
                     log_fatal("Response JSON object null error");
-                    *auth_status = EXCEPTION;
+                    auth_status->status = EXCEPTION;
+                    auth_status->error_code = OAUTH_SERVER_ERROR;
+                    return NULL;
                 }
             }
         }
-
-        curl_easy_cleanup(curl);
-        free(buffer);
-        free(chunk.memory);
+    } else {
+        log_error("curl is NULL");
+        auth_status->status = EXCEPTION;
+        auth_status->error_code = OAUTH_SERVER_ERROR;
+        return NULL;
     }
 }
 
@@ -248,17 +288,8 @@ void oauth_kakao_free_resource(void* res) {
     free(res);
 }
 void oauth_kakao_free_list(void** res, int32_t size, bool is_parent_ptr) {
-    /**
-     * List malloc이면 list의 내부 value를 free
-     */
-
-
     for(int i = 0; i < size; i++) {
-        printf("Cs: %d, res: %p\n", i, res[i]);
-        if(res[i] != NULL) {
-            void* dir = res[i];
-            free(dir);
-        }
+        if(res[i] != NULL) free(res[i]);
     }
     if(is_parent_ptr) free(res);
 }

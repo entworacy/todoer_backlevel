@@ -9,6 +9,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <openssl/rand.h>
 #include "json-c/json.h"
 #include "../base64/base64.h"
 #include "../log.h"
@@ -25,7 +26,19 @@ typedef enum _AuthStatus {
     EXCEPTION
 } AuthStatus;
 
-void oauth_kakao_check_token(char* code, AuthStatus* status);
+typedef struct _AuthStatus2 {
+    AuthStatus status;
+    char* error_code;
+} AuthStatus2;
+
+typedef struct _KakaoIDTokenPayload {
+    char* email;
+    char* sub;
+    char* picture;
+    char* nickname;
+} KakaoIDTokenPayload;
+
+KakaoIDTokenPayload *oauth_kakao_check_token(char* code, AuthStatus2* status);
 static int get_real_payload_key_list_arr_size(const char *id_payload_object_list[]);
 static void* get_value_by_key_indexed(const char* payload_key_list[], void* payload_result_list[], const char* req_key);
 static int __inner_get_key_index(const char* payload_key_list[], const char* req_key, int* target);
@@ -37,15 +50,6 @@ struct MemoryStruct {
     size_t size;
 };
 
-typedef struct _KakaoOAuthTokenResponse {
-    const char* token_type;
-    const char* access_token;
-    unsigned int expires_in;
-    const char* refresh_token;
-    unsigned int refresh_token_expires_in;
-    const char* scope;
-    const char* id_token;
-} KakaoOAuthTokenResponse;
 
 size_t __Network_write_to_memory_callback(void *buffer, size_t size, size_t nmemb, void *userp);
 

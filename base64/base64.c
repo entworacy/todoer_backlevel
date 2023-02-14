@@ -71,3 +71,32 @@ int base64_decode(char *text, unsigned char *dst, int numBytes )
     dst[space_idx++] = '\0';
     return space_idx;
 }
+
+int base64_encode(char *text, int numBytes, char **encodedText)
+{
+    unsigned char input[3]  = {0,0,0};
+    unsigned char output[4] = {0,0,0,0};
+    int   index, i, j, size;
+    char *p, *plen;
+    plen           = text + numBytes - 1;
+    size           = (4 * (numBytes / 3)) + (numBytes % 3? 4 : 0) + 1;
+    (*encodedText) = (char*)malloc(size);
+    j              = 0;
+    for  (i = 0, p = text;p <= plen; i++, p++) {
+        index = i % 3;
+        input[index] = *p;
+        if (index == 2 || p == plen) {
+            output[0] = ((input[0] & 0xFC) >> 2);
+            output[1] = ((input[0] & 0x3) << 4) | ((input[1] & 0xF0) >> 4);
+            output[2] = ((input[1] & 0xF) << 2) | ((input[2] & 0xC0) >> 6);
+            output[3] = (input[2] & 0x3F);
+            (*encodedText)[j++] = MimeBase64[output[0]];
+            (*encodedText)[j++] = MimeBase64[output[1]];
+            (*encodedText)[j++] = index == 0? '=' : MimeBase64[output[2]];
+            (*encodedText)[j++] = index <  2? '=' : MimeBase64[output[3]];
+            input[0] = input[1] = input[2] = 0;
+        }
+    }
+    (*encodedText)[j] = '\0';
+    return size;
+}
