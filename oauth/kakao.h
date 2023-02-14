@@ -20,6 +20,16 @@ struct MemoryStruct {
     size_t size;
 };
 
+typedef struct _KakaoOAuthTokenResponse {
+    const char* token_type;
+    const char* access_token;
+    unsigned int expires_in;
+    const char* refresh_token;
+    unsigned int refresh_token_expires_in;
+    const char* scope;
+    const char* id_token;
+} KakaoOAuthTokenResponse;
+
 size_t __Network_write_to_memory_callback(void *buffer, size_t size, size_t nmemb, void *userp);
 
 #endif //TODOER_BACKLEVEL_KAKAO_H
