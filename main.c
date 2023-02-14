@@ -33,7 +33,8 @@ int main() {
     if(pq_get_error_message(conn) == NULL) {
         // Successfully connected
         log_info("연결되었습니다.");
-        kakao_code_req_test("2jLPcVSMO_HBvIXM37MO3gTRuoUvv586gYyoMYPnxWfBfsAx_wHXhv6sSnZpAmh5x_UyJAo9cxcAAAGGT2WOAA");
+        KakaoOAuthTokenResponse response;
+        oauth_kakao_check_token("JDHl1yj5CauFjgiA3qPOU4t8PUibmN8B7fUsVKU9KITUhKOnMPvNte3vSJTyExG6rnO7Cwo9c00AAAGGUD3-FQ", &response);
     } else {
         // Something went wrong while connecting to pg database.
         return 1;

@@ -4,9 +4,6 @@
 
 #include "kakao.h"
 
-
-#include "l8w8jwt/decode.h"
-
 size_t __Network_write_to_memory_callback(void *buffer, size_t size, size_t nmemb, void *userp) {
     size_t realsize = size * nmemb;
     struct MemoryStruct *mem = (struct MemoryStruct *) userp;
@@ -25,8 +22,25 @@ size_t __Network_write_to_memory_callback(void *buffer, size_t size, size_t nmem
     return realsize;
 }
 
+static int get_real_payload_key_list_arr_size(const char *payload_key_list[]) {
+    int res = 0, current_size = 0;
+    int arr_size = sizeof(payload_key_list);
+    if(payload_key_list == NULL) res = -1;
+    else {
+        for(; current_size < arr_size; current_size++) {
+            if(payload_key_list[current_size] == NULL) continue;
+            res++;
+        }
+    }
+    return res + 1;
+}
 
-void kakao_code_req_test(char* code) {
+
+void oauth_kakao_check_token(char* code, AuthStatus* auth_status) {
+    if(auth_status == NULL) {
+        log_fatal("AuthStatus is NULL");
+        return;
+    }
     CURL* curl;
     CURLcode res;
 
@@ -75,16 +89,17 @@ void kakao_code_req_test(char* code) {
             fprintf(stderr, "curl_easy_perform() failed: %s\n",
                     curl_easy_strerror(res));
 
-        printf("res: %s\n", chunk.memory);
-
         json_object *obj = json_tokener_parse((const char*) chunk.memory);
-        if (obj == NULL)
+        if (obj == NULL) {
+            *auth_status = EXCEPTION;
             fprintf(stderr, "json_tokener_parse() failed\n");
+        }
         else {
             long response_code = 0;
             curl_easy_getinfo(curl, CURLINFO_HTTP_CODE, &response_code);
             if(response_code != 200) {
                 // Error
+                if(response_code == 401) *auth_status = UNAUTHORIZED;
                 char* error_code = json_object_get_string(json_object_object_get(obj, "error_code"));
                 char* error = json_object_get_string(json_object_object_get(obj, "error"));
                 char* error_description = json_object_get_string(json_object_object_get(obj, "error_description"));
@@ -105,6 +120,7 @@ void kakao_code_req_test(char* code) {
                         strlen(template) + strlen("https://kauth.kakao.com/oauth/token") + strlen(times) ));
                 sprintf(_buffer, template, times, error_code, error, error_description, response_code, buffer, "https://kauth.kakao.com/oauth/token");
                 fprintf(stderr, "%s\n", _buffer);
+                *auth_status = OTHER_HTTP_ERROR;
             } else {
                 // Success
                 json_object *access_token_object = json_object_object_get(obj, "access_token");
@@ -118,21 +134,96 @@ void kakao_code_req_test(char* code) {
                     const char* access_token = json_object_get_string(access_token_object);
                     const char* id_token = json_object_get_string(id_token_object);
                     strtok(id_token, ".");
-                    printf("%s\n", strtok(NULL, "."));
-                    struct l8w8jwt_decoding_params params;
-                    l8w8jwt_decoding_params_init(&params);
+                    char* id_v = strtok(NULL, ".");
+                    int def_len_size = strlen(id_v) * 3 / 4;
+                    char* __buffer = malloc(def_len_size);
+                    memset(__buffer, '\0', def_len_size);
+                    base64_decode(id_v, __buffer, def_len_size);
+                    // printf("%s\ndecode_len:%d, expected len:%d", __buffer, strlen(__buffer), def_len_size);
+                    log_info("real_decode_length: %d, decode_expected_length: %d", strlen(__buffer), def_len_size);
+                    json_object *id_payload_object = json_tokener_parse(__buffer);
+                    if (id_payload_object == NULL) {
+                        log_fatal("Failed to parse ID Token payload.");
+                        *auth_status = EXCEPTION;
+                        return;
+                    }
 
-                    params.alg = L8W8JWT_ALG_RS256;
+                    json_object *id_payload_object_list[KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH] = {NULL}; //추후 늘어날 것 예방
+                    const char* payload_key_list[KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH] = {"aud", "sub", "auth_time", "iss", "nickname", "exp", "iat", "picture", "email", NULL,};
+                    void* payload_result_list[KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH] = {NULL};
+                    enum json_type* payload_result_type_list = malloc(sizeof(enum json_type) * KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH);
+                    memset(payload_result_type_list, NULL, sizeof(enum json_type) * KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH); // DEBUG
+                    /**
+                     * KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH는 메모리 보호 및 추후 수정의 용이성을 위해
+                     * 기존 Key-Value 개수보다 더 크게 정의되어 있습니다.
+                     *
+                     * 메모리 부적절 접근을 막기위해 for문에서는 KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH을 제한조건으로 설정하면 안됩니다.
+                     * payload_key_list의 실제 크기로 접근해야 overflow 문제가 생기지 않습니다.
+                     */
+                    unsigned int for_loop_limit_size = get_real_payload_key_list_arr_size(payload_key_list);
+                    log_info("for_loop_limit_size: %d", for_loop_limit_size);
+                    for (int i = 0; i < for_loop_limit_size; i++) {
+                        id_payload_object_list[i] = json_object_object_get(id_payload_object, payload_key_list[i]);
+                        if (id_payload_object_list[i] == NULL) {
+                            log_fatal("id_payload에 대한 키를 정렬하던 중에 문제가 발생했습니다.");
+                            log_fatal("KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH: %d", KAKAO_ID_TOKEN_PAYLOAD_KEY_VALUE_LENGTH);
+                            log_fatal("Current Index: %d", i);
+                            log_fatal("Current Key: %s", payload_key_list[i]);
+                            log_info("오류가 발생하여 %d번째의 키가 무효 처리되었습니다.", i + 1);
+                            continue;
+                        }
+                        enum json_type type = json_object_get_type(id_payload_object_list[i]);
+                        payload_result_type_list[i] = type;
+                        switch (type) {
+                            case json_type_null:
+                                payload_result_list[i] = malloc(sizeof(NULL));
+                                *(char*)payload_result_list[i] = NULL;
+                                break;
+                            case json_type_string: {
+                                char* _res_memory = json_object_get_string(id_payload_object_list[i]);
 
-                    params.jwt = (char*)id_token;
-                    params.jwt_length = strlen(id_token);
-                    enum l8w8jwt_validation_result validation_result;
-                    int r = l8w8jwt_decode(&params, &validation_result, NULL, NULL);
+                                payload_result_list[i] = malloc( sizeof(char) * strlen(_res_memory) );
+                                strcpy(payload_result_list[i], _res_memory);
+                                // json_object_get_string()은 동적 할당인데 여러 메모리를 배열에 넣고 하나만 free하면
+                                // 나머지도 모두 freed 되는 문제가 있어서 별도의 메모리(malloc)에 넣고 기존거는 삭제해야 한다.
+                                break;
+                            }
+                            case json_type_int:
+                                payload_result_list[i] = malloc(sizeof(int32_t));
+                                *(int32_t *) payload_result_list[i] = json_object_get_int(id_payload_object_list[i]);
+                                break;
+                            default:
+                                break;
+                        }
+                    }
 
-                    printf("\nl8w8jwt_decode_rs256 function returned %s (code %d).\n\nValidation result: \n%d\n", r == L8W8JWT_SUCCESS ? "successfully" : "", r, validation_result);
+                    char* email = (char*) get_value_by_key_indexed(payload_key_list, payload_result_list, "email");
+                    char* sub = get_value_by_key_indexed(payload_key_list, payload_result_list, "sub"); // OAuth 고유 ID
+                    char* profile_url = get_value_by_key_indexed(payload_key_list, payload_result_list, "picture");
+                    char* user_name = get_value_by_key_indexed(payload_key_list, payload_result_list, "nickname");
 
+                    if(!email || !sub || !profile_url || !user_name) {
+                        // 모든 항목에 동의하지 않은 경우 일부 값이 NULL이다.
+                        printf("필수 항목에 동의되어 있지 않습니다. [%s]\n", OAUTH_REQUIRED_DATA_MISSING);
+                        return;
+                    }
+
+                    printf("sub: %s\n", sub);
+                    User user;
+                    user.email = email;
+                    // user.OAuthID = sub;
+                    user.name = user_name;
+                    user.profileUrlPath = profile_url;
+                    user.id = "";
+
+                    free(__buffer);
+
+                    //oauth_kakao_free_resource(payload_result_type_list);
+                    oauth_kakao_free_list(payload_result_list, sizeof(payload_result_list) / sizeof(void*), false);
+                    //oauth_kakao_free_list(id_payload_object_list, sizeof(id_payload_object_list) / sizeof(json_object*), false);
                 } else {
-
+                    log_fatal("Response JSON object null error");
+                    *auth_status = EXCEPTION;
                 }
             }
         }
@@ -141,4 +232,41 @@ void kakao_code_req_test(char* code) {
         free(buffer);
         free(chunk.memory);
     }
+}
+
+static void* get_value_by_key_indexed(const char* payload_key_list[], void* payload_result_list[], const char* req_key) {
+    if(payload_key_list == NULL || payload_result_list == NULL)
+        return NULL;
+
+    int idx = 0;
+    if(!__inner_get_key_index(payload_key_list, req_key, &idx))
+        return NULL;
+    return payload_result_list[idx];
+}
+void oauth_kakao_free_resource(void* res) {
+    if(res == NULL) return;
+    free(res);
+}
+void oauth_kakao_free_list(void** res, int32_t size, bool is_parent_ptr) {
+    /**
+     * List malloc이면 list의 내부 value를 free
+     */
+
+
+    for(int i = 0; i < size; i++) {
+        printf("Cs: %d, res: %p\n", i, res[i]);
+        if(res[i] != NULL) {
+            void* dir = res[i];
+            free(dir);
+        }
+    }
+    if(is_parent_ptr) free(res);
+}
+static int __inner_get_key_index(const char* payload_key_list[], const char* req_key, int* target) {
+    int arr_size = get_real_payload_key_list_arr_size(payload_key_list);
+    if (arr_size < 0) return 0;
+    for(int i = 0; i < arr_size; i++) {
+        if(strcmp(payload_key_list[i], req_key) == 0) *target = i;
+    }
+    return 1;
 }
